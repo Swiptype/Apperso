@@ -1,6 +1,6 @@
 Personal app for everyday.
 
-Consist of a To-Do-List, a quick notes, statistics, agenda and web links notes.
+Consist of a To-Do-List, quick notes, statistics, agenda and web links notes.
 
 Name and colors can be changed.
 
