@@ -3,6 +3,7 @@ from tkinter import colorchooser, messagebox, ttk
 from tkcalendar import Calendar
 import webbrowser
 import random
+import json, os
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
@@ -39,12 +40,47 @@ class PersonalApp(tk.Tk):
         self.agenda_events = {}       # dict: {date: [events]}
         self.web_links = []           # list of (title, url, description)
         self.notes_text = ""         # persistent while app runs
-
         # Statistics data: list of dicts {"title":..., "value":..., "color":...}
         self.stats = []
 
+        self.load_data()
+
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
         # Build UI
         self.show_home()
+
+    # ---------- Persistance ----------
+    def save_data(self):
+        data = {
+            "todo_tasks": self.todo_tasks,
+            "agenda_events": self.agenda_events,
+            "web_links": self.web_links,
+            "notes_text": self.notes_text,
+            "stats": self.stats,
+            "username": self.username,
+            "primary_color": self.primary_color,
+            "bg_color": self.bg_color,
+        }
+        with open("app_data.json", "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def load_data(self):
+        if os.path.exists("app_data.json"):
+            with open("app_data.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                self.todo_tasks = data.get("todo_tasks", [])
+                self.agenda_events = data.get("agenda_events", {})
+                self.web_links = data.get("web_links", [])
+                self.notes_text = data.get("notes_text", "")
+                self.stats = data.get("stats", [])
+                self.username = data.get("username", self.username)
+                self.primary_color = data.get("primary_color", self.primary_color)
+                self.bg_color = data.get("bg_color", self.bg_color)
+
+    def on_close(self):
+        self.save_data()
+        self.destroy()
 
     # ----------------- Theme helpers -----------------
     def apply_theme(self):
