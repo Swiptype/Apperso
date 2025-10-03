@@ -4,6 +4,7 @@ from tkcalendar import Calendar
 import webbrowser
 import random
 import json, os
+import requests
 
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import matplotlib.pyplot as plt
@@ -15,8 +16,8 @@ class PersonalApp(tk.Tk):
 
         # Configurable state
         self.username = username
-        self.primary_color = "#0b2545"  # dark blue (cases/buttons)
-        self.bg_color = "#ffffff"       # white (app background)
+        self.primary_color = "#0b2545"
+        self.bg_color = "#ffffff"
 
         # Window config
         self.title("Application personnelle")
@@ -27,7 +28,7 @@ class PersonalApp(tk.Tk):
         self.main_frame = tk.Frame(self, bg=self.bg_color)
         self.main_frame.pack(fill="both", expand=True)
 
-        # Settings button (kept outside main_frame; must update when theme changes)
+        # Settings button
         self.settings_btn = tk.Button(self, text="⚙",
                                       font=("Helvetica Neue", 14, "bold"),
                                       bg=self.bg_color, bd=0,
@@ -36,15 +37,16 @@ class PersonalApp(tk.Tk):
         self.settings_btn.place(relx=0.97, rely=0.05, anchor="ne")
 
         # Data stores
-        self.todo_tasks = []          # list of (task_text, status)
-        self.agenda_events = {}       # dict: {date: [events]}
-        self.web_links = []           # list of (title, url, description)
-        self.notes_text = ""         # persistent while app runs
-        # Statistics data: list of dicts {"title":..., "value":..., "color":...}
+        self.todo_tasks = []
+        self.agenda_events = {}
+        self.web_links = []
         self.stats = []
+        self.films = []  # liste de dicts {"title":..., "status":...}
 
+        # Charger les données sauvegardées
         self.load_data()
 
+        # Sauvegarde auto à la fermeture
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         # Build UI
@@ -56,8 +58,8 @@ class PersonalApp(tk.Tk):
             "todo_tasks": self.todo_tasks,
             "agenda_events": self.agenda_events,
             "web_links": self.web_links,
-            "notes_text": self.notes_text,
             "stats": self.stats,
+            "films": self.films,
             "username": self.username,
             "primary_color": self.primary_color,
             "bg_color": self.bg_color,
@@ -72,8 +74,8 @@ class PersonalApp(tk.Tk):
                 self.todo_tasks = data.get("todo_tasks", [])
                 self.agenda_events = data.get("agenda_events", {})
                 self.web_links = data.get("web_links", [])
-                self.notes_text = data.get("notes_text", "")
                 self.stats = data.get("stats", [])
+                self.films = data.get("films", [])
                 self.username = data.get("username", self.username)
                 self.primary_color = data.get("primary_color", self.primary_color)
                 self.bg_color = data.get("bg_color", self.bg_color)
@@ -82,50 +84,98 @@ class PersonalApp(tk.Tk):
         self.save_data()
         self.destroy()
 
-    # ----------------- Theme helpers -----------------
-    def apply_theme(self):
-        # Apply background colors to top-level and main_frame
-        try:
-            self.configure(bg=self.bg_color)
-        except tk.TclError:
-            pass
-        try:
-            self.main_frame.configure(bg=self.bg_color)
-        except tk.TclError:
-            pass
-        try:
-            self.settings_btn.configure(bg=self.bg_color)
-        except tk.TclError:
-            pass
+    # ---------- Films ----------
+    def render_films(self, container, stats_label, chart_container):
+        for widget in container.winfo_children():
+            widget.destroy()
 
-        # Recursively set bg for frames and labels within main_frame.
-        # Do NOT change Entries, Buttons, Listboxes, Text, Canvas, etc. to preserve readability.
-        def recurse_set_bg(parent):
-            for child in parent.winfo_children():
-                try:
-                    # Frames and LabelFrames -> set background
-                    if isinstance(child, (tk.Frame, tk.LabelFrame)):
-                        child.configure(bg=self.bg_color)
-                    # Labels -> set background (keeps text readable)
-                    elif isinstance(child, tk.Label):
-                        child.configure(bg=self.bg_color)
-                except tk.TclError:
-                    pass
-                recurse_set_bg(child)
+        for idx, film in enumerate(self.films):
+            row = tk.Frame(container, bg="white")
+            row.pack(fill="x", pady=2)
 
-        recurse_set_bg(self.main_frame)
+            title_label = tk.Label(row, text=film["title"], font=("Helvetica Neue", 14), bg="white")
+            title_label.pack(side="left", padx=5)
 
-    # ----------------- Core -----------------
+            status_var = tk.StringVar(value=film.get("status", "Neutre"))
+            combo = ttk.Combobox(row, textvariable=status_var,
+                                 values=["Bien", "Mauvais", "Neutre"], state="readonly", width=10)
+            combo.pack(side="left", padx=10)
+
+            def update_status(event=None, i=idx, var=status_var):
+                self.films[i]["status"] = var.get()
+                self.update_film_stats(stats_label, chart_container)
+            combo.bind("<<ComboboxSelected>>", update_status)
+
+            del_btn = tk.Button(row, text="Supprimer",
+                                command=lambda i=idx: self.delete_film(i, container, stats_label, chart_container),
+                                relief="flat", bg="#e74c3c", fg="white")
+            del_btn.pack(side="right", padx=5)
+
+        self.update_film_stats(stats_label, chart_container)
+
+    def add_film(self, title_entry, container, stats_label, chart_container):
+        title = title_entry.get().strip()
+        if not title:
+            return
+        self.films.append({"title": title, "status": "Neutre"})
+        title_entry.delete(0, tk.END)
+        self.render_films(container, stats_label, chart_container)
+
+    def delete_film(self, index, container, stats_label, chart_container):
+        self.films.pop(index)
+        self.render_films(container, stats_label, chart_container)
+
+    def search_movies(self, query):
+        api_key = "..."  # <-- mets ici ta clé TMDb
+        url = "https://api.themoviedb.org/3/search/movie"
+        params = {"api_key": api_key, "query": query, "language": "fr-FR"}
+        try:
+            r = requests.get(url, params=params)
+            if r.status_code == 200:
+                data = r.json()
+                return [m["title"] for m in data.get("results", [])]
+            else:
+                return []
+        except Exception:
+            return []
+
+    def update_film_stats(self, stats_label, chart_container):
+        total = len(self.films)
+        bien = sum(1 for f in self.films if f["status"] == "Bien")
+        mauvais = sum(1 for f in self.films if f["status"] == "Mauvais")
+        neutre = sum(1 for f in self.films if f["status"] == "Neutre")
+        stats_label.config(text=f"Total: {total} | Bien: {bien} | Mauvais: {mauvais} | Neutres: {neutre}")
+
+        # --- Graphe ---
+        for child in chart_container.winfo_children():
+            child.destroy()
+
+        fig = plt.Figure(figsize=(4, 3), dpi=100)
+        ax = fig.add_subplot(111)
+
+        if total > 0:
+            sizes = [bien, mauvais, neutre]
+            labels = ["Bien", "Mauvais", "Neutre"]
+            colors = ["#2ecc71", "#e74c3c", "#95a5a6"]
+            ax.pie(sizes, labels=labels, colors=colors, autopct="%1.0f%%", startangle=90)
+            ax.axis('equal')
+        else:
+            ax.text(0.5, 0.5, 'Aucun film', horizontalalignment='center', verticalalignment='center')
+            ax.axis('off')
+
+        canvas = FigureCanvasTkAgg(fig, master=chart_container)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    # ---------- Core ----------
     def clear_main(self):
         for widget in self.main_frame.winfo_children():
             widget.destroy()
 
     def show_home(self):
         self.clear_main()
-        # ensure main_frame background is current
         self.main_frame.configure(bg=self.bg_color)
 
-        # Top: greeting left of todo-list
         top_frame = tk.Frame(self.main_frame, bg=self.bg_color)
         top_frame.pack(fill="x", padx=20, pady=10)
 
@@ -134,20 +184,16 @@ class PersonalApp(tk.Tk):
                             bg=self.bg_color, fg="black")
         greeting.pack(side="left", anchor="n", padx=5)
 
-        # To-do-list (below/next to greeting depending on size)
         todo_frame = tk.LabelFrame(self.main_frame, text="To-do-list",
                                    font=("Helvetica Neue", 16, "bold"),
                                    bg=self.bg_color, fg=self.primary_color,
                                    bd=2, relief="groove", padx=10, pady=10)
         todo_frame.pack(fill="both", padx=20, pady=10, expand=True)
 
-        # container with white background for tasks (keeps contrast)
         self.todo_container = tk.Frame(todo_frame, bg="white")
         self.todo_container.pack(fill="both", expand=True)
-
         self.render_todo()
 
-        # Modify area (separate, below)
         modify_frame = tk.LabelFrame(self.main_frame, text="Modifier To-do-list",
                                      font=("Helvetica Neue", 14, "bold"),
                                      bg=self.bg_color, fg=self.primary_color,
@@ -164,7 +210,6 @@ class PersonalApp(tk.Tk):
                              relief="flat", bd=0, padx=10, pady=5)
         save_btn.pack(side="right", padx=5)
 
-        # Sections grid (uses primary_color)
         sections_frame = tk.Frame(self.main_frame, bg=self.bg_color)
         sections_frame.pack(fill="both", expand=True, padx=20, pady=20)
 
@@ -172,7 +217,7 @@ class PersonalApp(tk.Tk):
             ("Agenda", "Agenda"),
             ("Statistiques", "Statistiques"),
             ("Liens web", "Liens"),
-            ("Notes rapides", "Notes"),
+            ("Films", "Films"),
         ]
 
         for i, (label, target) in enumerate(sections):
@@ -189,37 +234,27 @@ class PersonalApp(tk.Tk):
         for row in range(2):
             sections_frame.grid_rowconfigure(row, weight=1)
 
-        # Apply theme to any widgets that were not rebuilt with correct bg
         self.apply_theme()
 
-    # ----------------- To-do -----------------
+    # ---------- To-do ----------
     def render_todo(self):
         for widget in self.todo_container.winfo_children():
             widget.destroy()
-
         for idx, (task, status) in enumerate(self.todo_tasks):
             row = tk.Frame(self.todo_container, bg="white")
             row.pack(fill="x", padx=5, pady=2)
-
-            status_label = tk.Label(row, text=status, font=("Helvetica Neue", 14),
-                                    bg="white")
+            status_label = tk.Label(row, text=status, font=("Helvetica Neue", 14), bg="white")
             status_label.pack(side="left", padx=5)
-
-            text_label = tk.Label(row, text=task, font=("Helvetica Neue", 14),
-                                  bg="white", anchor="w")
+            text_label = tk.Label(row, text=task, font=("Helvetica Neue", 14), bg="white", anchor="w")
             text_label.pack(side="left", fill="x", expand=True, padx=5)
-
-            # validate (green) and refuse (red) indicators implemented with text labels
             check_btn = tk.Button(row, text="Valider",
                                   command=lambda i=idx: self.update_task(i, "✅"),
                                   relief="flat", bg=self.primary_color, fg="white")
             check_btn.pack(side="right", padx=2)
-
             cross_btn = tk.Button(row, text="Refuser",
                                   command=lambda i=idx: self.update_task(i, "❌"),
                                   relief="flat", bg=self.primary_color, fg="white")
             cross_btn.pack(side="right", padx=2)
-
             del_btn = tk.Button(row, text="Supprimer",
                                 command=lambda i=idx: self.delete_task(i),
                                 relief="flat", bg="#e74c3c", fg="white")
@@ -242,7 +277,7 @@ class PersonalApp(tk.Tk):
         self.todo_tasks.pop(index)
         self.render_todo()
 
-    # ----------------- Agenda -----------------
+    # ---------- Agenda ----------
     def agenda_add_event(self, date, entry, listbox):
         text = entry.get().strip()
         if not text:
@@ -264,7 +299,7 @@ class PersonalApp(tk.Tk):
         for ev in self.agenda_events.get(date, []):
             listbox.insert(tk.END, ev)
 
-    # ----------------- Liens web -----------------
+    # ---------- Liens ----------
     def add_link(self, title_entry, url_entry, desc_entry, container):
         title, url, desc = title_entry.get().strip(), url_entry.get().strip(), desc_entry.get().strip()
         if not title or not url:
@@ -278,22 +313,56 @@ class PersonalApp(tk.Tk):
     def render_links(self, container):
         for widget in container.winfo_children():
             widget.destroy()
-
         for title, url, desc in self.web_links:
             row = tk.Frame(container, bg="white", pady=5)
             row.pack(fill="x", padx=5)
-
             link_btn = tk.Button(row, text=title, fg="blue", cursor="hand2",
                                  font=("Helvetica Neue", 14, "underline"),
                                  relief="flat", bg="white",
                                  command=lambda u=url: webbrowser.open(u))
             link_btn.pack(side="left", padx=5)
-
             desc_label = tk.Label(row, text=desc, font=("Helvetica Neue", 12),
                                   bg="white", fg="black", anchor="w")
             desc_label.pack(side="left", fill="x", expand=True, padx=10)
 
-    # ----------------- Sections -----------------
+    # ---------- Statistiques ----------
+    def render_stats(self, tree, swatches_frame, canvas_container):
+        for item in tree.get_children():
+            tree.delete(item)
+        for w in swatches_frame.winfo_children():
+            w.destroy()
+        total = 0.0
+        for i, s in enumerate(self.stats):
+            tree.insert("", "end", iid=str(i), values=(s["title"], f"{s['value']:.2f}"))
+            total += s["value"]
+            sw = tk.Frame(swatches_frame, bg=self.bg_color)
+            sw.pack(fill="x", pady=2)
+            color_box = tk.Frame(sw, width=26, height=18, bg=s["color"], bd=1, relief="sunken")
+            color_box.pack(side="left", padx=5)
+            lbl = tk.Label(sw, text=f"{s['title']} — {s['value']:.2f}€", bg=self.bg_color, anchor="w")
+            lbl.pack(side="left", padx=6)
+
+        for child in canvas_container.winfo_children():
+            child.destroy()
+        fig = plt.Figure(figsize=(4, 3), dpi=100)
+        ax = fig.add_subplot(111)
+        if self.stats and total > 0:
+            labels = [s["title"] for s in self.stats]
+            sizes = [s["value"] for s in self.stats]
+            colors = [s["color"] for s in self.stats]
+            ax.pie(sizes, labels=None, colors=colors, startangle=90, wedgeprops={"edgecolor": "w"})
+            ax.axis('equal')
+            ax.legend([f"{l}: {v:.2f}€" for l, v in zip(labels, sizes)],
+                      loc='center left', bbox_to_anchor=(1, 0.5))
+            ax.set_title(f"Total: {total:.2f}€")
+        else:
+            ax.text(0.5, 0.5, 'Aucune donnée', horizontalalignment='center', verticalalignment='center')
+            ax.axis('off')
+        canvas = FigureCanvasTkAgg(fig, master=canvas_container)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True)
+
+    # ---------- Sections ----------
     def show_section(self, name):
         self.clear_main()
         self.main_frame.configure(bg=self.bg_color)
@@ -309,24 +378,18 @@ class PersonalApp(tk.Tk):
         if name == "Agenda":
             cal = Calendar(content_frame, selectmode="day", date_pattern="yyyy-mm-dd")
             cal.pack(pady=10)
-
-            listbox = tk.Listbox(content_frame, font=("Helvetica Neue", 12),
-                                 height=8, width=50)
+            listbox = tk.Listbox(content_frame, font=("Helvetica Neue", 12), height=8, width=50)
             listbox.pack(pady=10)
-
             entry = tk.Entry(content_frame, font=("Helvetica Neue", 12))
             entry.pack(pady=5, fill="x")
-
             add_btn = tk.Button(content_frame, text="Ajouter évènement",
                                 command=lambda: self.agenda_add_event(cal.get_date(), entry, listbox),
                                 bg=self.primary_color, fg="white")
             add_btn.pack(pady=2)
-
             del_btn = tk.Button(content_frame, text="Supprimer évènement",
                                 command=lambda: self.agenda_delete_event(cal.get_date(), listbox),
                                 bg=self.primary_color, fg="white")
             del_btn.pack(pady=2)
-
             def update_events(event=None):
                 self.agenda_refresh_list(cal.get_date(), listbox)
             cal.bind("<<CalendarSelected>>", update_events)
@@ -334,75 +397,76 @@ class PersonalApp(tk.Tk):
         elif name == "Liens":
             form = tk.Frame(content_frame, bg=self.bg_color)
             form.pack(fill="x", pady=5)
-
             tk.Label(form, text="Titre:", bg=self.bg_color).grid(row=0, column=0, sticky="w")
             title_entry = tk.Entry(form)
             title_entry.grid(row=0, column=1, sticky="ew", padx=5)
-
             tk.Label(form, text="URL:", bg=self.bg_color).grid(row=1, column=0, sticky="w")
             url_entry = tk.Entry(form)
             url_entry.grid(row=1, column=1, sticky="ew", padx=5)
-
             tk.Label(form, text="Description:", bg=self.bg_color).grid(row=2, column=0, sticky="w")
             desc_entry = tk.Entry(form)
             desc_entry.grid(row=2, column=1, sticky="ew", padx=5)
-
             form.grid_columnconfigure(1, weight=1)
-
             container = tk.Frame(content_frame, bg="white", bd=1, relief="solid")
             container.pack(fill="both", expand=True, pady=10)
-
             add_btn = tk.Button(form, text="Ajouter lien",
                                 command=lambda: self.add_link(title_entry, url_entry, desc_entry, container),
                                 bg=self.primary_color, fg="white")
             add_btn.grid(row=3, column=0, columnspan=2, pady=5)
-
             self.render_links(container)
 
-        elif name == "Notes":
-            txt = tk.Text(content_frame, font=("Helvetica Neue", 14), wrap="word", bg="white")
-            txt.insert("1.0", self.notes_text)
-            txt.pack(fill="both", expand=True)
-
-            def save_notes(event=None):
-                self.notes_text = txt.get("1.0", tk.END).strip()
-            txt.bind("<KeyRelease>", save_notes)
-
-        elif name == "Statistiques":
-            # Form to add a stat entry
+        elif name == "Films":
             form = tk.Frame(content_frame, bg=self.bg_color)
             form.pack(fill="x", pady=5)
+            tk.Label(form, text="Titre du film:", bg=self.bg_color).grid(row=0, column=0, sticky="w")
+            
+            film_entry = ttk.Combobox(form)
+            film_entry.grid(row=0, column=1, sticky="ew", padx=5)
 
+            def on_type(event):
+                query = film_entry.get().strip()
+                if len(query) >= 3:  # attendre au moins 3 caractères
+                    suggestions = self.search_movies(query)
+                    film_entry["values"] = suggestions
+
+            film_entry.bind("<KeyRelease>", on_type)
+            
+            container = tk.Frame(content_frame, bg="white", bd=1, relief="solid")
+            container.pack(fill="both", expand=True, pady=10)
+            stats_label = tk.Label(content_frame, text="", font=("Helvetica Neue", 12),
+                                   bg=self.bg_color, fg="black")
+            stats_label.pack(pady=5)
+            chart_container = tk.Frame(content_frame, bg=self.bg_color)
+            chart_container.pack(fill="both", expand=True, pady=10)
+            add_btn = tk.Button(form, text="Ajouter film",
+                                command=lambda: self.add_film(film_entry, container, stats_label, chart_container),
+                                bg=self.primary_color, fg="white")
+            add_btn.grid(row=1, column=0, columnspan=2, pady=5)
+            self.render_films(container, stats_label, chart_container)
+
+        elif name == "Statistiques":
+            form = tk.Frame(content_frame, bg=self.bg_color)
+            form.pack(fill="x", pady=5)
             tk.Label(form, text="Titre:", bg=self.bg_color).grid(row=0, column=0, sticky="w")
             stat_title = tk.Entry(form)
             stat_title.grid(row=0, column=1, sticky="ew", padx=5)
-
             tk.Label(form, text="Valeur (€):", bg=self.bg_color).grid(row=1, column=0, sticky="w")
             stat_value = tk.Entry(form)
             stat_value.grid(row=1, column=1, sticky="ew", padx=5)
-
-            # Color chooser for this stat
             chosen_color_var = tk.StringVar(value="#%06x" % random.randint(0, 0xFFFFFF))
-
             def pick_color():
                 c = colorchooser.askcolor(title="Choisir couleur pour cette valeur")[1]
                 if c:
                     chosen_color_var.set(c)
                     color_preview.configure(bg=c)
-
-            color_btn = tk.Button(form, text="Choisir couleur",
-                                  command=pick_color, bg=self.primary_color, fg="white")
+            color_btn = tk.Button(form, text="Choisir couleur", command=pick_color,
+                                  bg=self.primary_color, fg="white")
             color_btn.grid(row=0, column=2, rowspan=2, padx=8)
-
             color_preview = tk.Frame(form, width=36, height=24, bg=chosen_color_var.get(), bd=1, relief="sunken")
             color_preview.grid(row=0, column=3, rowspan=2, padx=5)
-
             form.grid_columnconfigure(1, weight=1)
-
-            # Treeview to list the stats
             list_frame = tk.Frame(content_frame, bg=self.bg_color)
             list_frame.pack(fill="both", expand=True, pady=10)
-
             columns = ("titre", "valeur")
             tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=6)
             tree.heading("titre", text="Titre")
@@ -410,15 +474,10 @@ class PersonalApp(tk.Tk):
             tree.column("titre", anchor="w")
             tree.column("valeur", anchor="e", width=120)
             tree.pack(side="left", fill="both", expand=True, padx=(0, 5))
-
-            # Small canvas on right for color swatches and actions
             right_panel = tk.Frame(list_frame, bg=self.bg_color)
             right_panel.pack(side="right", fill="y")
-
             swatches_frame = tk.Frame(right_panel, bg=self.bg_color)
             swatches_frame.pack(fill="y", pady=5)
-
-            # Buttons
             def add_stat():
                 title = stat_title.get().strip()
                 val_raw = stat_value.get().strip().replace(',', '.')
@@ -436,32 +495,24 @@ class PersonalApp(tk.Tk):
                 chosen_color_var.set("#%06x" % random.randint(0, 0xFFFFFF))
                 color_preview.configure(bg=chosen_color_var.get())
                 self.render_stats(tree, swatches_frame, canvas_container)
-
             def del_stat():
                 sel = tree.selection()
                 if not sel:
                     return
                 idx = int(sel[0])
-                # tree item ids will be string indices we set
                 try:
                     self.stats.pop(idx)
                 except Exception:
                     pass
                 self.render_stats(tree, swatches_frame, canvas_container)
-
-            add_btn = tk.Button(form, text="Ajouter",
-                                command=add_stat, bg=self.primary_color, fg="white")
+            add_btn = tk.Button(form, text="Ajouter", command=add_stat,
+                                bg=self.primary_color, fg="white")
             add_btn.grid(row=2, column=0, columnspan=2, pady=6)
-
-            del_btn = tk.Button(form, text="Supprimer sélection",
-                                command=del_stat, bg="#e74c3c", fg="white")
+            del_btn = tk.Button(form, text="Supprimer sélection", command=del_stat,
+                                bg="#e74c3c", fg="white")
             del_btn.grid(row=2, column=2, columnspan=2, pady=6)
-
-            # Pie chart area
             canvas_container = tk.Frame(content_frame, bg=self.bg_color)
             canvas_container.pack(fill="both", expand=True)
-
-            # Initial render
             self.render_stats(tree, swatches_frame, canvas_container)
 
         back_btn = tk.Button(self.main_frame, text="Retour",
@@ -470,122 +521,68 @@ class PersonalApp(tk.Tk):
                              font=("Helvetica Neue", 12, "bold"),
                              relief="flat", bd=0, padx=15, pady=8)
         back_btn.pack(pady=10)
-
-        # ensure new section widgets get the theme applied
         self.apply_theme()
 
-    # ----------------- Statistiques renderer -----------------
-    def render_stats(self, tree, swatches_frame, canvas_container):
-        # Clear tree
-        for item in tree.get_children():
-            tree.delete(item)
+    # ---------- Theme ----------
+    def apply_theme(self):
+        try: self.configure(bg=self.bg_color)
+        except tk.TclError: pass
+        try: self.main_frame.configure(bg=self.bg_color)
+        except tk.TclError: pass
+        try: self.settings_btn.configure(bg=self.bg_color)
+        except tk.TclError: pass
+        def recurse_set_bg(parent):
+            for child in parent.winfo_children():
+                try:
+                    if isinstance(child, (tk.Frame, tk.LabelFrame)):
+                        child.configure(bg=self.bg_color)
+                    elif isinstance(child, tk.Label):
+                        child.configure(bg=self.bg_color)
+                except tk.TclError: pass
+                recurse_set_bg(child)
+        recurse_set_bg(self.main_frame)
 
-        # Fill tree and swatches
-        for w in swatches_frame.winfo_children():
-            w.destroy()
-
-        total = 0.0
-        for i, s in enumerate(self.stats):
-            tree.insert("", "end", iid=str(i), values=(s["title"], f"{s["value"]:.2f}"))
-            total += s["value"]
-            sw = tk.Frame(swatches_frame, bg=self.bg_color)
-            sw.pack(fill="x", pady=2)
-
-            color_box = tk.Frame(sw, width=26, height=18, bg=s["color"], bd=1, relief="sunken")
-            color_box.pack(side="left", padx=5)
-
-            lbl = tk.Label(sw, text=f"{s['title']} — {s['value']:.2f}€", bg=self.bg_color, anchor="w")
-            lbl.pack(side="left", padx=6)
-
-        # Draw pie chart
-        for child in canvas_container.winfo_children():
-            child.destroy()
-
-        fig = plt.Figure(figsize=(4, 3), dpi=100)
-        ax = fig.add_subplot(111)
-
-        if self.stats and total > 0:
-            labels = [s["title"] for s in self.stats]
-            sizes = [s["value"] for s in self.stats]
-            colors = [s["color"] for s in self.stats]
-            # autopct show percentage
-            ax.pie(sizes, labels=None, colors=colors, startangle=90, wedgeprops={"edgecolor": "w"})
-            ax.axis('equal')
-            # legend with values
-            ax.legend([f"{l}: {v:.2f}€" for l, v in zip(labels, sizes)], loc='center left', bbox_to_anchor=(1, 0.5))
-            ax.set_title(f"Total: {total:.2f}€")
-        else:
-            ax.text(0.5, 0.5, 'Aucune donnée', horizontalalignment='center', verticalalignment='center')
-            ax.axis('off')
-
-        canvas = FigureCanvasTkAgg(fig, master=canvas_container)
-        canvas.draw()
-        canvas.get_tk_widget().pack(fill="both", expand=True)
-
-    # ----------------- Settings -----------------
+    # ---------- Settings ----------
     def open_settings(self):
         self.clear_main()
         self.main_frame.configure(bg=self.bg_color)
-
         tk.Label(self.main_frame, text="Paramètres",
                  font=("Helvetica Neue", 22, "bold"),
                  bg=self.bg_color, fg="black").pack(pady=20)
-
-        # Username change
         tk.Label(self.main_frame, text="Nom d'utilisateur:",
                  font=("Helvetica Neue", 14), bg=self.bg_color).pack(pady=5)
         name_entry = tk.Entry(self.main_frame, font=("Helvetica Neue", 14))
         name_entry.insert(0, self.username)
         name_entry.pack(pady=5)
-
         def save_name():
             self.username = name_entry.get().strip() or "Utilisateur"
             self.show_home()
-
-        save_name_btn = tk.Button(self.main_frame, text="Changer le nom",
-                                  command=save_name,
-                                  bg=self.primary_color, fg="white",
-                                  font=("Helvetica Neue", 12, "bold"))
-        save_name_btn.pack(pady=10)
-
-        # Background color (apply immediately to whole app)
+        tk.Button(self.main_frame, text="Changer le nom", command=save_name,
+                  bg=self.primary_color, fg="white",
+                  font=("Helvetica Neue", 12, "bold")).pack(pady=10)
         def change_bg():
             color = colorchooser.askcolor(title="Choisir couleur de fond")[1]
             if color:
                 self.bg_color = color
-                # Apply theme without leaving settings view
                 self.apply_theme()
-
-        bg_btn = tk.Button(self.main_frame, text="Changer couleur fond",
-                           command=change_bg,
-                           bg=self.primary_color, fg="white",
-                           font=("Helvetica Neue", 12, "bold"))
-        bg_btn.pack(pady=5)
-
-        # Primary color (rebuild UI so buttons use new color)
+        tk.Button(self.main_frame, text="Changer couleur fond",
+                  command=change_bg, bg=self.primary_color, fg="white",
+                  font=("Helvetica Neue", 12, "bold")).pack(pady=5)
         def change_primary():
             color = colorchooser.askcolor(title="Choisir couleur des cases")[1]
             if color:
                 self.primary_color = color
-                # Recreate current view so newly created buttons use the new primary color.
-                # If user is in settings, we re-open settings so they remain here but with updated colors.
                 self.show_home()
                 self.open_settings()
-
-        primary_btn = tk.Button(self.main_frame, text="Changer couleur cases",
-                                command=change_primary,
-                                bg=self.primary_color, fg="white",
-                                font=("Helvetica Neue", 12, "bold"))
-        primary_btn.pack(pady=5)
-
+        tk.Button(self.main_frame, text="Changer couleur cases",
+                  command=change_primary, bg=self.primary_color, fg="white",
+                  font=("Helvetica Neue", 12, "bold")).pack(pady=5)
         back_btn = tk.Button(self.main_frame, text="Retour",
                              command=lambda: self.show_home(),
                              bg=self.primary_color, fg="white",
                              font=("Helvetica Neue", 12, "bold"),
                              relief="flat", bd=0, padx=15, pady=8)
         back_btn.pack(pady=20)
-
-        # Make sure the settings button itself matches the new theme immediately
         self.apply_theme()
 
 
